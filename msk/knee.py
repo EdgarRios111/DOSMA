@@ -20,7 +20,7 @@ SAVE_KEY = 'save'
 PID_KEY = 'pid'
 DATA_FORMAT_KEY = 'format'
 
-SUPPORTED_TISSUES = [FemoralCartilage(), Meniscus(), TibialCartilage()]
+SUPPORTED_TISSUES = [FemoralCartilage, Meniscus, TibialCartilage]
 SUPPORTED_QUANTITATIVE_VALUES = [QV.T2, QV.T1_RHO, QV.T2_STAR]
 
 
@@ -32,20 +32,20 @@ def knee_parser(base_parser):
     parser_tissue = base_parser.add_parser(KNEE_KEY,
                                            help='calculate/analyze quantitative data for knee')
 
-    parser_tissue.add_argument('-%s' % MEDIAL_TO_LATERAL_KEY, action='store_const', const=True, default=False,
+    parser_tissue.add_argument('--%s' % MEDIAL_TO_LATERAL_KEY, action='store_const', const=True, default=False,
                                help="defines slices in sagittal direction going from medial -> lateral")
 
-    parser_tissue.add_argument('-%s' % PID_KEY, nargs='?', default=str(uuid.uuid4()), help='specify pid')
+    parser_tissue.add_argument('--%s' % PID_KEY, nargs='?', default=str(uuid.uuid4()), help='specify pid')
 
     for tissue in SUPPORTED_TISSUES:
-        parser_tissue.add_argument('-%s' % tissue.STR_ID, action='store_const', default=False, const=True,
+        parser_tissue.add_argument('--%s' % tissue.STR_ID, action='store_const', default=False, const=True,
                                    help='analyze %s' % tissue.FULL_NAME)
 
     qvs_dict = dict()
     for qv in SUPPORTED_QUANTITATIVE_VALUES:
         qv_name = qv.name.lower()
         qvs_dict[qv_name] = qv
-        parser_tissue.add_argument('-%s' % qv_name, action='store_const', const=True, default=False,
+        parser_tissue.add_argument('--%s' % qv_name, action='store_const', const=True, default=False,
                                    help='quantify %s' % qv_name)
 
     parser_tissue.set_defaults(func=handle_knee)
@@ -63,7 +63,9 @@ def handle_knee(vargin):
 
     if tissues is None or len(tissues) == 0:
         print('Computing for all supported knee tissues...')
-        tissues = SUPPORTED_TISSUES
+        tissues = []
+        for t in SUPPORTED_TISSUES:
+            tissues.append(t())
 
     # Get all supported quantitative values
     qvs = []

@@ -10,7 +10,10 @@ from data_io.format_io import ImageDataFormat
 from data_io.med_volume import MedicalVolume
 from data_io.nifti_io import NiftiReader
 from defaults import DEFAULT_OUTPUT_IMAGE_DATA_FORMAT
+from models.model import SegModel
 from scan_sequences.scans import TargetSequence
+from tissues.tissue import Tissue
+from utils.cmd_line_utils import ActionWrapper
 from utils.quant_vals import T2
 
 
@@ -32,27 +35,25 @@ class QDess(TargetSequence):
     __T2_UPPER_BOUND__ = 100
     __T2_DECIMAL_PRECISION__ = 1  # 0.1 ms
 
-    use_rms = False
-
     def __init__(self, dicom_path, load_path=None):
         super().__init__(dicom_path=dicom_path, load_path=load_path)
 
-        if not self.validate_dess():
-            raise ValueError('dicoms in \'%s\' are not acquired from DESS sequence' % self.dicom_path)
-
-    def validate_dess(self):
-        """Validate that the dicoms are of DESS sequence by checking for dicom header tags
+    def __validate_scan__(self) -> bool:
+        """Validate that the dicoms are of qDESS sequence
+        Scans should have 2 echos and dicom metadata for GL_AREA and TG
         :return: a boolean
         """
         ref_dicom = self.ref_dicom
-        return self.__GL_AREA_TAG__ in ref_dicom and self.__TG_TAG__ in ref_dicom and len(
-            self.volumes) == self.__NUM_ECHOS__
+        contains_expected_dicom_metadata = self.__GL_AREA_TAG__ in ref_dicom and self.__TG_TAG__ in ref_dicom
+        has_expected_num_echos = len(self.volumes) == self.__NUM_ECHOS__
 
-    def segment(self, model, tissue):
+        return contains_expected_dicom_metadata & has_expected_num_echos
+
+    def segment(self, model: SegModel, tissue: Tissue, use_rms: bool = False):
         # Use first echo for segmentation
         print('Segmenting %s...' % tissue.FULL_NAME)
 
-        if self.use_rms:
+        if use_rms:
             segmentation_volume = self.calc_rms()
         else:
             segmentation_volume = self.volumes[0]
@@ -65,12 +66,19 @@ class QDess(TargetSequence):
 
         return mask
 
-    def generate_t2_map(self, tissue):
+    def generate_t2_map(self, tissue: Tissue, suppress_fat: bool=False,
+                        gl_area: float=None, tg: float=None):
         """ Generate 3D t2 map
-
+        :param tissue: A Tissue instance
+        :param suppress_fat: Suppress fat region in t2 computation (i.e. reduce noise)
+        :param gl_area: GL Area - required if not provided in the dicom
+        :param tg: tg value - required if not provided in the dicom
         :return MedicalVolume with 3D map of t2 values
                 all invalid pixels are denoted by the value 0
         """
+
+        if not self.__validate_scan__() and (not gl_area or not tg):
+            raise ValueError('dicoms in \'%s\' do not contain GL_Area and Tg tags. Please input manually' % self.dicom_path)
 
         if self.volumes is None or self.ref_dicom is None:
             raise ValueError('volumes and ref_dicom fields must be initialized')
@@ -87,13 +95,13 @@ class QDess(TargetSequence):
         # All timing in seconds
         TR = float(ref_dicom.RepetitionTime) * 1e-3
         TE = float(ref_dicom.EchoTime) * 1e-3
-        Tg = float(ref_dicom[self.__TG_TAG__].value) * 1e-6
+        Tg = tg*1e-6 if tg else float(ref_dicom[self.__TG_TAG__].value) * 1e-6
         T1 = float(tissue.T1_EXPECTED) * 1e-3
 
         # Flip Angle (degree -> radians)
         alpha = math.radians(float(ref_dicom.FlipAngle))
 
-        GlArea = float(ref_dicom[self.__GL_AREA_TAG__].value)
+        GlArea = gl_area if gl_area else float(ref_dicom[self.__GL_AREA_TAG__].value)
 
         Gl = GlArea / (Tg * 1e6) * 100
         gamma = 4258 * 2 * math.pi  # Gamma, Rad / (G * s).
@@ -124,10 +132,11 @@ class QDess(TargetSequence):
 
         t2map = np.around(t2map, self.__T2_DECIMAL_PRECISION__)
 
+        if suppress_fat:
+            t2map = t2map * (echo_1 > 0.15*np.max(echo_1))
+
         t2_map_wrapped = MedicalVolume(t2map,
-                                       pixel_spacing=subvolumes[0].pixel_spacing,
-                                       orientation=subvolumes[0].orientation,
-                                       scanner_origin=subvolumes[0].scanner_origin,
+                                       affine=subvolumes[0].affine,
                                        headers=deepcopy(subvolumes[0].headers))
 
         tissue.add_quantitative_value(T2(t2_map_wrapped))
@@ -169,9 +178,6 @@ class QDess(TargetSequence):
         echo1 = np.asarray(self.volumes[0].volume, dtype=np.float64)
         echo2 = np.asarray(self.volumes[1].volume, dtype=np.float64)
 
-        assert (echo1 >= 0).all()
-        assert (echo2 >= 0).all()
-
         assert (~np.iscomplex(echo1)).all() and (~np.iscomplex(echo2)).all()
 
         sq_sum = echo1 ** 2 + echo2 ** 2
@@ -184,3 +190,21 @@ class QDess(TargetSequence):
         mv.volume = rms
 
         return mv
+
+    @classmethod
+    def cmd_line_actions(cls):
+        """Provide command line information (such as name, help strings, etc) as list of dictionary"""
+
+        segment_action = ActionWrapper(name=cls.segment.__name__,
+                                       help='generate automatic segmentation',
+                                       param_help={
+                                           'use_rms': 'use root mean square (rms) of two echos for segmentation'},
+                                       alternative_param_names={'use_rms': ['rms']})
+        generate_t2_map_action = ActionWrapper(name=cls.generate_t2_map.__name__,
+                                               aliases=['t2'],
+                                               param_help={'suppress_fat': 'suppress computation on low SNR fat regions',
+                                                           'gl_area': 'gl_area',
+                                                           'tg': 'tg'},
+                                               help='generate T2 map')
+
+        return [(cls.segment, segment_action), (cls.generate_t2_map, generate_t2_map_action)]
