@@ -19,7 +19,8 @@ from scan_sequences.qdess import QDess
 from tissues.tissue import Tissue
 from utils.quant_vals import QuantitativeValues as QV
 from data_io.fig_format import SUPPORTED_VISUALIZATION_FORMATS
-
+from scan_sequences.dce_lpch import DceLpch
+from tissues.kidney import Kidney
 
 SUPPORTED_QUANTITATIVE_VALUES = [QV.T2, QV.T1_RHO, QV.T2_STAR]
 
@@ -41,9 +42,11 @@ SEGMENTATION_BATCH_SIZE_KEY = 'batch_size'
 
 TISSUES_KEY = 'tissues'
 
-SUPPORTED_SCAN_TYPES = [QDess, CubeQuant]
+SUPPORTED_SCAN_TYPES = [QDess, CubeQuant, DceLpch]
 BASIC_TYPES = [bool, str, float, int, list, tuple]
 
+SUPPORTED_TISSUES = [Kidney]
+SUPPORTED_TISSUES.extend(knee.SUPPORTED_TISSUES)
 
 def get_nargs_for_basic_type(base_type):
     if base_type in [str, float, int]:
@@ -52,14 +55,14 @@ def get_nargs_for_basic_type(base_type):
         return '+'
 
 def add_tissues(parser):
-    for tissue in knee.SUPPORTED_TISSUES:
+    for tissue in SUPPORTED_TISSUES:
         parser.add_argument('--%s' % tissue.STR_ID, action='store_const', default=False, const=True,
                             help='analyze %s' % tissue.FULL_NAME)
 
 
 def parse_tissues(vargin):
     tissues = []
-    for tissue in knee.SUPPORTED_TISSUES:
+    for tissue in SUPPORTED_TISSUES:
         t = tissue()
         if t.STR_ID in vargin.keys() and vargin[t.STR_ID] and t.STR_ID not in [x.STR_ID for x in tissues]:
             load_path = vargin[LOAD_KEY]
@@ -72,7 +75,7 @@ def parse_tissues(vargin):
     if len(tissues) == 0:
         print('No tissues specified, computing for all supported tissues...')
         tissues = []
-        for tissue in knee.SUPPORTED_TISSUES:
+        for tissue in SUPPORTED_TISSUES:
             t = tissue()
             if t.STR_ID not in [x.STR_ID for x in tissues]:
                 load_path = vargin[LOAD_KEY]
@@ -94,7 +97,7 @@ def add_segmentation_subparser(parser):
     parser.add_argument('--%s' % SEGMENTATION_WEIGHTS_DIR_KEY, type=str, nargs=1,
                         required=True,
                         help='path to directory with weights')
-    parser.add_argument('--%s' % SEGMENTATION_MODEL_KEY, choices=SUPPORTED_MODELS, nargs='?', default='unet2d',
+    parser.add_argument('--%s' % SEGMENTATION_MODEL_KEY, nargs='?', default='unet2d',
                         help='Model to use for segmentation. Choices: {%s}' % 'unet2d')
     parser.add_argument('--%s' % SEGMENTATION_BATCH_SIZE_KEY, metavar='B', type=int,
                         default=defaults.DEFAULT_BATCH_SIZE, nargs='?',
@@ -110,10 +113,15 @@ def handle_segmentation(vargin, scan, tissue):
     # Load model
     dims = scan.get_dimensions()
     input_shape = (dims[0], dims[1], 1)
-    model = get_model(vargin[SEGMENTATION_MODEL_KEY],
-                      input_shape=input_shape,
-                      weights_path=tissue.weights_filepath)
-    model.batch_size = vargin[SEGMENTATION_BATCH_SIZE_KEY]
+    model_str = vargin[SEGMENTATION_MODEL_KEY]
+
+    try:
+        model = get_model(model_str,
+                            input_shape=input_shape,
+                            weights_path=tissue.weights_filepath)
+        model.batch_size = vargin[SEGMENTATION_BATCH_SIZE_KEY]
+    except:
+        model = model_str
 
     return model
 
