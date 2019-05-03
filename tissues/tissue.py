@@ -167,7 +167,7 @@ class Tissue(ABC):
         :param mask: a MedicalVolume
         """
         assert type(mask) is MedicalVolume, "mask for tissue must be of type MedicalVolume"
-        mask.reformat(SAGITTAL)
+        #mask.reformat(SAGITTAL)
         self.__mask__ = mask
 
     def get_mask(self):

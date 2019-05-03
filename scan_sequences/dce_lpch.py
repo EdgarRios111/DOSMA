@@ -16,6 +16,7 @@ from models.model import SegModel
 from scan_sequences.scans import TargetSequence
 from tissues.tissue import Tissue
 from utils.cmd_line_utils import ActionWrapper
+from scipy.misc import imresize
 
 TEMPORAL_POSITION_IDENTIFIER_TAG = 0x00200100
 NUM_TEMPORAL_POSITIONS_TAG = 0x00200105
@@ -97,7 +98,7 @@ class DCEKidneySegModel(SegModel):
     num_channels = 50
 
     def __load_keras_model__(self, input_shape):
-        inputs = Input(input_shape)
+        inputs = Input((input_shape[0] // 2, input_shape[1] // 2, input_shape[3]))
         s = Lambda(lambda x: x / 255)(inputs)
 
         c1 = Conv2D(16, (3, 3), activation='elu', kernel_initializer='he_normal', padding='same')(s)
@@ -166,11 +167,15 @@ class DCEKidneySegModel(SegModel):
 
         """
         #vol_copy = deepcopy(volume)
-        vol_copy = MedicalVolume(volume=volume.volume, affine=volume.affine)
+        vol_copy = MedicalVolume(volume=deepcopy(volume.volume), affine=deepcopy(volume.affine))
 
         # reorient to the expected coronal plane
         vol_copy.reformat(('SI', 'RL', 'PA'))
         vol = vol_copy.volume
+
+        vol2 = np.zeros(256, 256, vol.shape[-1])
+        for z in range(vol.shape[-1]):
+            vol2[..., z] = imresize(vol[..., z], (256, 256))
 
         # reshape volumes to be (z, y, x, c)
         v = self.shift_dimensions_yxz2zyxc(vol, 50)
@@ -178,11 +183,17 @@ class DCEKidneySegModel(SegModel):
         model = self.keras_model
         mask = model.predict(v, batch_size=self.batch_size)
 
-        # binarize mask
-        #mask = (mask > self.sigmoid_threshold).astype(np.uint8)
-
         # reshape mask to be (y, x, z)
         mask = np.transpose(np.squeeze(mask, axis=-1), (1, 2, 0))
+
+        # upsample
+        vol2 = np.zeros(volume.volume.shape[:2] + (mask.shape[-1],))
+        for z in range(mask.shape[-1]):
+            vol2[..., z] = imresize(vol[..., z], (512, 512))
+        mask = vol2
+
+        # binarize mask
+        mask = (mask > self.sigmoid_threshold).astype(np.uint8)
 
         K.clear_session()
 
