@@ -93,7 +93,7 @@ class DceLpch(TargetSequence):
 
 
 class DCEKidneySegModel(SegModel):
-    sigmoid_threshold = 0.4
+    sigmoid_threshold = 0.5
     num_channels = 50
 
     def __load_keras_model__(self, input_shape):
@@ -165,10 +165,11 @@ class DCEKidneySegModel(SegModel):
         :raise ValueError if tissue is not a string or not in list permitted tissues
 
         """
-        vol_copy = deepcopy(volume)
+        #vol_copy = deepcopy(volume)
+        vol_copy = MedicalVolume(volume=volume.volume, affine=volume.affine)
 
         # reorient to the expected coronal plane
-        vol_copy.reformat(CORONAL)
+        vol_copy.reformat(('SI', 'RL', 'PA'))
         vol = vol_copy.volume
 
         # reshape volumes to be (z, y, x, c)
@@ -178,14 +179,18 @@ class DCEKidneySegModel(SegModel):
         mask = model.predict(v, batch_size=self.batch_size)
 
         # binarize mask
-        mask = (mask > self.sigmoid_threshold).astype(np.uint8)
+        #mask = (mask > self.sigmoid_threshold).astype(np.uint8)
 
-        # reshape mask to be (y, x, slice)
+        # reshape mask to be (y, x, z)
         mask = np.transpose(np.squeeze(mask, axis=-1), (1, 2, 0))
 
         K.clear_session()
 
-        vol_copy = MedicalVolume(mask, affine=deepcopy(vol_copy.affine), headers=deepcopy(vol_copy.headers[:mask.shape[-1]]))
+        headers = None
+        if volume.headers:
+            headers = volume.headers[:mask.shape[-1]]
+
+        vol_copy = MedicalVolume(mask, affine=vol_copy.affine, headers=headers)
 
         # reorient to match with original volume
         vol_copy.reformat(volume.orientation)
@@ -201,14 +206,32 @@ class DCEKidneySegModel(SegModel):
         """
 
         # I have a X Y Z volume and UNET asks for a Z X Y C volume (C is for image_channels, like in RGB)
-        [X, Y, Z] = volume.shape
+        # int(Z/C) dividing the number of new slices by the num of channels (phases) -->  5kimgs n 50 phases, 100 slices per vol, if C=1 no pasa naa'
+        # [X, Y, Z] = volume.shape
+        # C = num_channels
+        # Z = int(Z / C)
+        # OutVol = np.zeros(shape=(Z, X, Y, C))
+        # for c in range(C):
+        #     c = c * Z  # c*100
+        #     for z in range(Z):
+        #         temp = volume[:, :, c + z]
+        #         OutVol[z, :, :, int(c / 100)] = temp
+        # return OutVol
+
+        X, Y, Z = volume.shape
         C = num_channels
-        Z = int(
-            Z / C)  # int(Z/C) dividing the number of new slices by the num of channels (phases) -->  5kimgs n 50 phases, 100 slices per vol, if C=1 no pasa naa'
-        OutVol = np.zeros(shape=(Z, X, Y, C))
-        for c in range(C):
-            c = c * Z  # c*100
-            for z in range(Z):
-                temp = volume[:, :, c + z]
-                OutVol[z, :, :, int(c / 100)] = temp
+        Z = int(Z / C)  # num slices
+        OutVol = np.zeros((Z, X, Y, C))
+        for z in range(Z):
+            OutVol[z, ...] = volume[..., z::100]
         return OutVol
+
+
+if __name__ == '__main__':
+    from tissues import kidney
+    scan = DceLpch(dicom_path='/Users/arjundesai/Desktop/sample_data/dce-data/DCE_TEST')
+    tissue = kidney.Kidney()
+    tissue.find_weights('/Users/arjundesai/Desktop/sample_data/dce-data/weights')
+
+    scan.segment('dce_kidney', tissue)
+
