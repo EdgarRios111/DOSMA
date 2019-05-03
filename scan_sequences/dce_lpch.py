@@ -97,8 +97,12 @@ class DCEKidneySegModel(SegModel):
     sigmoid_threshold = 0.5
     num_channels = 50
 
+    def __init__(self, input_shape, weights_path):
+        self.input_shape = (input_shape[0] // 2, input_shape[1] // 2, input_shape[2])
+        super().__init__(self.input_shape, weights_path)
+
     def __load_keras_model__(self, input_shape):
-        inputs = Input((input_shape[0] // 2, input_shape[1] // 2, input_shape[3]))
+        inputs = Input(input_shape)
         s = Lambda(lambda x: x / 255)(inputs)
 
         c1 = Conv2D(16, (3, 3), activation='elu', kernel_initializer='he_normal', padding='same')(s)
@@ -166,16 +170,14 @@ class DCEKidneySegModel(SegModel):
         :raise ValueError if tissue is not a string or not in list permitted tissues
 
         """
-        #vol_copy = deepcopy(volume)
         vol_copy = MedicalVolume(volume=deepcopy(volume.volume), affine=deepcopy(volume.affine))
 
         # reorient to the expected coronal plane
         vol_copy.reformat(('SI', 'RL', 'PA'))
         vol = vol_copy.volume
 
-        vol2 = np.zeros(256, 256, vol.shape[-1])
-        for z in range(vol.shape[-1]):
-            vol2[..., z] = imresize(vol[..., z], (256, 256))
+        # resize input to the expected input size
+        vol = self.__preprocess_input(vol)
 
         # reshape volumes to be (z, y, x, c)
         v = self.shift_dimensions_yxz2zyxc(vol, 50)
@@ -186,11 +188,8 @@ class DCEKidneySegModel(SegModel):
         # reshape mask to be (y, x, z)
         mask = np.transpose(np.squeeze(mask, axis=-1), (1, 2, 0))
 
-        # upsample
-        vol2 = np.zeros(volume.volume.shape[:2] + (mask.shape[-1],))
-        for z in range(mask.shape[-1]):
-            vol2[..., z] = imresize(vol[..., z], (512, 512))
-        mask = vol2
+        # upsample prediction mask to expected size
+        mask = self.__postprocess_mask(mask, volume.volume.shape[0], volume.volume.shape[1])
 
         # binarize mask
         mask = (mask > self.sigmoid_threshold).astype(np.uint8)
@@ -215,20 +214,6 @@ class DCEKidneySegModel(SegModel):
         :param num_channels: the number of channels (C) that are in the volume
         :return:
         """
-
-        # I have a X Y Z volume and UNET asks for a Z X Y C volume (C is for image_channels, like in RGB)
-        # int(Z/C) dividing the number of new slices by the num of channels (phases) -->  5kimgs n 50 phases, 100 slices per vol, if C=1 no pasa naa'
-        # [X, Y, Z] = volume.shape
-        # C = num_channels
-        # Z = int(Z / C)
-        # OutVol = np.zeros(shape=(Z, X, Y, C))
-        # for c in range(C):
-        #     c = c * Z  # c*100
-        #     for z in range(Z):
-        #         temp = volume[:, :, c + z]
-        #         OutVol[z, :, :, int(c / 100)] = temp
-        # return OutVol
-
         X, Y, Z = volume.shape
         C = num_channels
         Z = int(Z / C)  # num slices
@@ -236,6 +221,30 @@ class DCEKidneySegModel(SegModel):
         for z in range(Z):
             OutVol[z, ...] = volume[..., z::100]
         return OutVol
+
+    def __preprocess_input(self, vol: np.ndarray):
+        # Resize the image to the input size
+        # using imresize scales the values between [0,255], which is expected by the network
+        assert vol.ndim == 3, "The volume should be 3D"
+        vol_new = np.zeros(self.input_shape[:2] + (vol.shape[-1],))
+        X_new, Y_new = self.input_shape[:2]
+
+        for z in range(vol.shape[-1]):
+            vol_new[..., z] = imresize(vol[..., z], (X_new, Y_new))
+
+        return vol_new
+
+    def __postprocess_mask(self, vol: np.ndarray, X, Y):
+        # Resize the mask to the expected size
+        # recall imresize scales to [0, 255] --> scale to be between 0,1
+        # this step should be done prior to binarization
+        Z = vol.shape[-1]
+        vol_new = np.zeros((X, Y, Z))
+        for z in range(Z):
+            vol_new[..., z] = imresize(vol[..., z], (X,Y)) / 255
+
+        return vol_new
+
 
 
 if __name__ == '__main__':
